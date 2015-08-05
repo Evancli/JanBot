@@ -1,10 +1,8 @@
+// 08/02/2015 by Evan Li
+// Based on
 // Bluegiga BGLib Arduino interface library slave device stub sketch
 // 2014-02-12 by Jeff Rowberg <jeff@rowberg.net>
 // Updates should (hopefully) always be available at https://github.com/jrowberg/bglib
-
-// Changelog:
-//      2014-02-12 - Fixed compile problem from missing constants
-//      2013-03-17 - Initial release
 
 /* ============================================
    !!!!!!!!!!!!!!!!!
@@ -48,45 +46,7 @@ THE SOFTWARE.
 
 
 /* COMMANDS
-Single LED Control
-[0xXX]	[0xXX] 	[0xXX] 	[0xXX]
-LED CH	RED	GREEN	BLUE
-0-127	0-255	0-255	0-255
 
-Stop All LEDs
-[0x80]
-CMD
-128
-
-Disable All LEDs
-[0x81]
-CMD
-129
-
-All LED Control
-[0x82]	[0xXX] 	[0xXX] 	[0xXX]
-CMD	RED	GREEN	BLUE
-130	0-255	0-255	0-255
-
-Rainbow Cycle
-[0x83]
-CMD
-131
-
-Rainbow Chase Cycle
-[0x84]
-CMD
-132
-
-Brightness Control
-[0x85]	[0xXX]
-CMD	AMT
-133	0-255
-
-Timing Control
-[0x86]	[0xXX]
-CMD	MULTIP
-134	0-255
 */
 
 #include "BGLib.h"
@@ -95,7 +55,7 @@ CMD	MULTIP
 #include <EEPROM.h>
 
 // uncomment the following line for debug serial output
-#define DEBUG
+//#define DEBUG
 
 // ================================================================
 // BLE STATE TRACKING (UNIVERSAL TO JUST ABOUT ANY BLE PROJECT)
@@ -142,24 +102,28 @@ BGLib ble112((HardwareSerial *)&Serial1, 0, 1);
 
 
 #define LEDPIN 6
-#define NUMBEROFLEDS 24
+#define ADCPIN 0
+#define NUMBEROFLEDS 2
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUMBEROFLEDS, LEDPIN, NEO_GRB + NEO_KHZ800);
 
-boolean RainbowFlag = false;
-boolean RainbowCycleFlag = false;
-
-uint16_t rainbowJ;
-uint16_t rainbowCycleI, rainbowCycleJ;
-
-int settingsPermFlag; // 64
-int rainbowPermFlag; // 65
-int rainbowCyclePermFlag; // 66
-int solidPermColor; // 67
-
-byte brightness = 0xff;
-byte timingMultiplier = 0x01;
+byte timingMultiplier = 20;
 byte timerCount;
+byte halfTimer;
+
+static uint32_t greenColor = strip.Color(0, 255, 0);
+static uint32_t redColor = strip.Color(255, 0, 0);
+static uint32_t blueColor = strip.Color(0, 0, 255);
+
+static uint32_t whiteColor = strip.Color(255, 255, 255);
+static uint32_t yellowColor = strip.Color(255, 255, 0);
+static uint32_t purpleColor = strip.Color(255, 0, 255);
+
+bool adcWorking;
+int battADCValue;
+
+byte leftMotorSpeed = 127;
+byte rightMotorSpeed = 127;
 
 // ================================================================
 // ARDUINO APPLICATION SETUP AND LOOP FUNCTIONS
@@ -167,8 +131,6 @@ byte timerCount;
 
 // initialization sequence
 void setup() {
-  
-  RainbowFlag = true;
   // initialize status LED
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
@@ -199,10 +161,12 @@ void setup() {
   ble112.ble_evt_connection_status = my_ble_evt_connection_status;
   ble112.ble_evt_connection_disconnected = my_ble_evt_connection_disconnect;
   ble112.ble_evt_attributes_value = my_ble_evt_attributes_value;
+  ble112.ble_evt_attributes_user_read_request = my_ble_evt_attributes_user_read_request;
+  //ble112.ble_rsp_attributes_user_read_response = my_ble_rsp_attributes_user_read_response;
 
   // open Arduino USB serial (and wait, if we're using Leonardo)
   // use 38400 since it works at 8MHz as well as 16MHz
-  Serial.begin(57600);
+  Serial.begin(9600);
   while (!Serial);
 
   // open BLE serial port
@@ -213,65 +177,48 @@ void setup() {
   delay(5); // wait 5ms
   digitalWrite(BLE_RESET_PIN, HIGH);
 
-  /*
-  settingsPermFlag = EEPROM.read(64);
+  strip.setPixelColor(0, blueColor);
+  strip.setPixelColor(1, blueColor);
+  strip.show();
 
-  if (settingsPermFlag == 1) {
-    rainbowPermFlag = EEPROM.read(65);
-    rainbowCyclePermFlag = EEPROM.read(66);
-    solidPermColor = EEPROM.read(67);
-  }
-  */
+  ADCSRA =  bit (ADEN);   // turn ADC on
+  ADCSRA |= bit (ADPS0) |  bit (ADPS1) | bit (ADPS2);  // Prescaler of 128
+  ADMUX =   bit (REFS0) | (ADCPIN & 0x07);  // AVcc
 
   Timer1.initialize(); // set a timer of length 20000 microseconds (or 0.02 sec - or 50Hz => the led will blink 5 times, 5 cycles of on-and-off, per second)
-  Timer1.attachInterrupt( timerIsr , 10000);
+  Timer1.attachInterrupt( timerIsr , 50000);
 }
 
 void timerIsr()
 {
-
   timerCount++;
+  halfTimer++;
   if (timerCount > timingMultiplier) {
     timerCount = 0;
 
-    if (RainbowFlag == true) {
-      //rainbow(20);
-
-      if (rainbowJ < 256) {
-
-        uint16_t i;
-
-        for (i = 0; i < strip.numPixels(); i++) {
-          strip.setPixelColor(i, Wheel((i + rainbowJ) & 255));
-        }
-        strip.setBrightness(brightness);
-        strip.show();
-
-        rainbowJ++;
-        if (rainbowJ >= 256) {
-          rainbowJ = 0;
-        }
-      }
-    } else if (RainbowCycleFlag == true) {
-
-      uint16_t i;
-
-      if (rainbowCycleJ < 256 * 5) {
-
-        for (i = 0; i < strip.numPixels(); i++) {
-          strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + rainbowCycleJ) & 255));
-        }
-        strip.setBrightness(brightness);
-        strip.show();
-
-        rainbowCycleJ++;
-        if (rainbowCycleJ >= 256 * 5) {
-          rainbowCycleJ = 0;
-        }
-      }
-
-
+    if (!adcWorking) {
+      bitSet (ADCSRA, ADSC);  // start a conversion
+      adcWorking = true;
     }
+
+    if (bit_is_clear(ADCSRA, ADSC)) {
+      battADCValue = ADC;  // read result
+      adcWorking = false;
+    }
+  }
+
+  if (halfTimer > 1) {
+    halfTimer = 0;
+  }
+
+  if (halfTimer == 0) {
+    Serial.print("1");
+    Serial.write(rightMotorSpeed);
+    Serial.print('\r');
+  } else {
+    Serial.print("2");
+    Serial.write(leftMotorSpeed);
+    Serial.print('\r');
   }
 
 }
@@ -536,68 +483,14 @@ void my_ble_evt_attributes_value(const struct ble_msg_attributes_value_evt_t *ms
 
   byte command = msg -> value.data[0];
 
-  if (command < 128) {
+  if (command == 128) { // 0x80
 
-    clearPresetFlags();
+    byte byte1 = msg -> value.data[1];
+    byte byte2 = msg -> value.data[2];
 
-    byte p = msg -> value.data[0];
-    byte r = msg -> value.data[1];
-    byte g = msg -> value.data[2];
-    byte b = msg -> value.data[3];
+    joystickInputMixer(byte1, byte2);
 
-    strip.setPixelColor(p, strip.Color(r, g, b));
-  } else {
-
-    if (command == 128) { // 0x80
-      clearPresetFlags();
-      strip.setBrightness(brightness);
-      strip.show();
-    } if (command == 129) { // 0x81
-      clearPresetFlags();
-      uint32_t color = strip.Color(0, 0, 0);
-
-      for (int i = 0; i < NUMBEROFLEDS; i++) {
-        strip.setPixelColor(i, color);
-      }
-      strip.setBrightness(brightness);
-      strip.show();
-    } else if (command == 130) { // 0x82 Solid Color
-      clearPresetFlags();
-
-      byte r = msg -> value.data[1];
-      byte g = msg -> value.data[2];
-      byte b = msg -> value.data[3];
-
-      byte ro = map(r, 0, 255, 0, brightness);
-      byte go = map(g, 0, 255, 0, brightness);
-      byte bo = map(b, 0, 255, 0, brightness);
-
-      uint32_t color = strip.Color((byte) ro, (byte) go, (byte) bo);
-
-      for (int i = 0; i < NUMBEROFLEDS; i++) {
-        strip.setPixelColor(i, color);
-      }
-      strip.setBrightness(brightness);
-      strip.show();
-    } else if (command == 131) { // 0x83 Rainbow Cycle
-      clearPresetFlags();
-      RainbowFlag = true;
-    } else if (command == 132) { // 0x84 Rainbow Cycle
-      clearPresetFlags();
-      RainbowCycleFlag = true;
-    } else if (command == 133) { // 0x85 Brightness control
-      brightness = msg -> value.data[1];
-    } else if (command == 134) { // 0x86 Timing control
-      timingMultiplier = msg -> value.data[1];
-    }
   }
-
-  /*
-
-  */
-
-
-
   /*
   // check for data written to "c_rx_data" handle
   if (msg -> handle == GATT_HANDLE_C_RX_DATA && msg -> value.len > 0) {
@@ -610,28 +503,82 @@ void my_ble_evt_attributes_value(const struct ble_msg_attributes_value_evt_t *ms
   */
 }
 
+
+void my_ble_evt_attributes_user_read_request(const struct ble_msg_attributes_user_read_request_evt_t *msg) {
+#ifdef DEBUG
+  Serial.print("###\tattributes_value: { ");
+  Serial.print("connection: "); Serial.print(msg -> connection, HEX);
+  Serial.print(", handle: "); Serial.print(msg -> handle, HEX);
+  Serial.print(", offset: "); Serial.print(msg -> offset, HEX);
+  Serial.print(", max_size: "); Serial.print(msg -> maxsize, HEX);
+  Serial.println(" }");
+#endif
+
+}
+
+void my_ble_rsp_attributes_user_read_response(const struct ble_msg_attributes_user_write_response_rsp_t *msg) {
+#ifdef DEBUG
+  Serial.print("###\tattributes_value: { ");
+  Serial.print("connection: "); Serial.print(msg -> connection, HEX);
+  Serial.print(", handle: "); Serial.print(msg -> handle, HEX);
+  Serial.print(", offset: "); Serial.print(msg -> offset, HEX);
+  Serial.print(", max_size: "); Serial.print(msg -> maxsize, HEX);
+  Serial.println(" }");
+#endif
+}
+
+
+#define SLOPE  1.085
+#define INTERCEPT 21.645
+
+void joystickInputMixer(byte x, byte y) {
+
+  float xt = 0;
+  float yt = 0;
+
+  if ( x > 117 && x < 137)
+    xt = 127;
+  else if (x >= 137)
+    xt = SLOPE * x - INTERCEPT;
+  else
+    xt = SLOPE * x + INTERCEPT;
+
+  if ( y > 117 && y < 137)
+    yt = 127;
+  else if (y >= 137)
+    yt = SLOPE * y - INTERCEPT;
+  else
+    yt = SLOPE * y + INTERCEPT;
+  
+    
+    
+  int out1 = (xt - yt + 127);   //used to have 255
+  int out2 = (xt + yt - 127);
+
+  if (out1 > 255) out1 = 255;
+  if (out1 < 0) out1 = 0;
+  
+  if (out2 > 255) out2 = 255;
+  if (out2 < 0) out2 = 0;
+  
+  leftMotorSpeed = (byte)out1;
+  rightMotorSpeed = (byte)out2;
+  
+  if (y > 127) {
+    strip.setPixelColor(0, greenColor);
+    strip.setPixelColor(1, greenColor);
+  } else if (y < 127) {
+    strip.setPixelColor(0, redColor);
+    strip.setPixelColor(1, redColor);
+  } else {
+    strip.setPixelColor(0, whiteColor);
+    strip.setPixelColor(1, whiteColor);
+  }
+
+  strip.show();
+}
+
 void ble_command_parser(uint8array value) {
 
 }
 
-void clearPresetFlags() {
-  RainbowFlag = false;
-  RainbowCycleFlag = false;
-}
-
-
-
-// Input a value 0 to 255 to get a color value.
-// The colours are a transition r - g - b - back to r.
-uint32_t Wheel(byte WheelPos) {
-
-  if (WheelPos < 85) {
-    return strip.Color((byte)(WheelPos * 3) , (byte)(255 - WheelPos * 3) , 0);
-  } else if (WheelPos < 170) {
-    WheelPos -= 85;
-    return strip.Color((byte)(255 - WheelPos * 3) , 0, (byte)(WheelPos * 3) );
-  } else {
-    WheelPos -= 170;
-    return strip.Color(0, (byte)(WheelPos * 3) , (byte)(255 - WheelPos * 3) );
-  }
-}

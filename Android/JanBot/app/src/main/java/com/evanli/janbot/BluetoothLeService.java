@@ -320,4 +320,12 @@ public class BluetoothLeService extends Service {
 
         return mBluetoothGatt.getServices();
     }
+
+    public BluetoothGattService getGattService(UUID uuid) {
+        return mBluetoothGatt.getService(uuid);
+    }
+
+    public boolean writeGattCharacteristic(BluetoothGattCharacteristic characteristic) {
+        return mBluetoothGatt.writeCharacteristic(characteristic);
+    }
 }

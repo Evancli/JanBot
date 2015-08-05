@@ -50,8 +50,8 @@ public class MainActivityFragment extends Fragment {
             @Override
             public void onValueChanged(int angle, int power, int direction) {
 
-                double x = power * Math.cos(Math.toRadians(angle)) / 100.0f;
-                double y = power * Math.sin(Math.toRadians(angle)) / 100.0f;
+                double x = power * Math.sin(Math.toRadians(angle)) / 100.0f;
+                double y = power * Math.cos(Math.toRadians(angle)) / 100.0f;
 
                 EventBus.getDefault().post(new JoystickControlEvent(x, y));
             }
